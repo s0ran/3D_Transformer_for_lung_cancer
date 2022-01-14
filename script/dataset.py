@@ -19,9 +19,13 @@ from utility import measure_time
 from memory_profiler import profile
 
 CONFIG_DATASET=CONFIG["Dataset"]
+CONFIG_PATH=CONFIG["PATH"]
 PATCH_SIZE=CONFIG_DATASET.getint("PATCHSIZE")
 BLOCK_SIZE=CONFIG_DATASET.getint("BLOCKSIZE")
 IMAGE_SIZE=CONFIG_DATASET.getint("IMAGESIZE")
+LUNG_RADIOMICS_PATH=CONFIG_PATH["LUNG_RADIOMICS_PATH"]
+LUNG_RADIOMICS_INTEROBS_PATH=CONFIG_PATH["LUNG_RADIOMICS_INTEROBS_PATH"]
+LUNG_CT_PATH=CONFIG_PATH["LUNG_CT_PATH"]
 
 class BaseDataset (Dataset):
     def __init__(self,path,base,label=True,patients=None,patients_path=None):
@@ -154,7 +158,7 @@ class SegmentationDataset(BaseDataset):
         self.patients=patients_list
         self.seg_path=seg_path_list
 
-    @measure_time
+
     def __getitem__(self,idx):
         #print(f"len(self){len(self)} -idx {idx}")
         if idx>=len(self):
@@ -297,7 +301,6 @@ class PatchProvider:
         z_end=z_start+self.block_size
         return x_start,x_end,y_start,y_end,z_start,z_end
 
-    @measure_time
     def custumgetitem(self,idx,with_label=False):
         size=self.cube.size()
         #print(size)
@@ -409,12 +412,12 @@ class LabeledPatchProvider(PatchProvider):
 
 class LungCTPretrainingDataset(PretrainingDataset):
     def __init__(self,patients=None,patients_path=None):
-        path="/home/share/soran/CancerSegmentation/dataset/manifest-1608669183333/Lung-PET-CT-Dx"
+        path=LUNG_CT_PATH
         super().__init__(path,"Lung_Dx-",patients=patients,patients_path=patients_path)
 
 class LungCTFullImageDataset(BaseDataset):
     def __init__(self,patients=None,patients_path=None):
-        path="/home/share/soran/CancerSegmentation/dataset/manifest-1608669183333/Lung-PET-CT-Dx"
+        path=LUNG_CT_PATH
         super().__init__(path,"Lung_Dx-",patients=patients,patients_path=patients_path)#,label=False)
 
     def collate_fn(self,data):
@@ -424,7 +427,7 @@ class LungCTFullImageDataset(BaseDataset):
 
 class LungRadiomicsInterobserverDataset(SegmentationDataset):
     def __init__(self,keys=["GTV-1vis-5"]):
-        path="/home/share/soran/CancerSegmentation/dataset/manifest-1598890146597/NSCLC-Radiomics-Interobserver1"
+        path=LUNG_RADIOMICS_INTEROBS_PATH
         super().__init__(path,"interobs",keys=keys)
 
     def collate_fn(self,data):
@@ -433,7 +436,7 @@ class LungRadiomicsInterobserverDataset(SegmentationDataset):
 
 class LungRadiomicsDataset(SegmentationDataset):
     def __init__(self,keys=["GTV-1"]):
-        path="/home/nfs/snakagawa/Strage/CancerSegmentation/dataset/manifest-1603198545583/NSCLC-Radiomics"
+        path=LUNG_RADIOMICS_PATH
         super().__init__(path,"LUNG1-",keys=keys)
 
 

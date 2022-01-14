@@ -137,7 +137,7 @@ def train(model,traindata,valdata):
         model.train()
         for patch_provider in tqdm(traindata,disable=not TQDM_ENABLED):
             trainloader=DataLoader(patch_provider,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
-            print(list(model.parameters())[2][0,0,0,:,:])
+            #print(list(model.parameters())[2][0,0,0,:,:])
             model,dsc,loss=train_one_loader(model,optimizer,loss_function,trainloader)    
             WRITER.add_scalar("process/DSC_on_training",dsc,DSC_on_training_Index)
             DSC_on_training_Index+=1

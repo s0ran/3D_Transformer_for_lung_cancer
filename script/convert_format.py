@@ -1,11 +1,17 @@
 import subprocess
 import os
+from config import CONFIG
+
+
 
 TYPE="nifti"
 PREFIX="Segmentation"
+CONFIG_PATH=CONFIG["PATH"]
+DATASETPATH=CONFIG_PATH["LUNG_RADIOMICS_INTEROBS_PATH"]
+
 #CONVERTER=":/tmp"
 #DATASETPATH="/home/s0ran/Strage/CancerSegmentation/dataset/manifest-1603198545583/NSCLC-Radiomics"
-DATASETPATH="/home/share/soran/CancerSegmentation/dataset/manifest-1598890146597/NSCLC-Radiomics-Interobserver1"
+#DATASETPATH="/home/share/soran/CancerSegmentation/dataset/manifest-1598890146597/NSCLC-Radiomics-Interobserver1"
 #path="/tmp/LUNG1-001/09-18-2008-StudyID-NA-69331/300.000000-Segmentation-9.554"
 DOC_DIRNAME="/tmp"
 
