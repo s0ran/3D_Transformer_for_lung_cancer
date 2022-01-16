@@ -10,7 +10,7 @@ def measure_time(func):
         start=time.time()
         res=func(*args,**kwargs)
         end=time.time()
-        print(f"{func.__name__} function took {int((end-start)/60//60)}[h] {int((end-start)//60%60)}[min] {int(end-start)%24%60}[s]",flush=True)
+        print(f"{func.__name__} function took {int((end-start)/60//60)}[h] {int((end-start)//60%60)}[min] {int(end-start)%24%60}[s] == {end-start}[s]",flush=True)
         return res
     return wrapper 
 
