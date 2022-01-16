@@ -23,6 +23,7 @@ CONFIG_PATH=CONFIG["PATH"]
 PATCH_SIZE=CONFIG_DATASET.getint("PATCHSIZE")
 BLOCK_SIZE=CONFIG_DATASET.getint("BLOCKSIZE")
 IMAGE_SIZE=CONFIG_DATASET.getint("IMAGESIZE")
+MAX_DEPTH=CONFIG_DATASET.getint("MAX_DEPTH")
 LUNG_RADIOMICS_PATH=CONFIG_PATH["LUNG_RADIOMICS_PATH"]
 LUNG_RADIOMICS_INTEROBS_PATH=CONFIG_PATH["LUNG_RADIOMICS_INTEROBS_PATH"]
 LUNG_CT_PATH=CONFIG_PATH["LUNG_CT_PATH"]
@@ -171,6 +172,42 @@ class SegmentationDataset(BaseDataset):
     def __len__(self):
         return len(self.patients_path)
 
+class VolumeSegmentationDataset(SegmentationDataset):
+    def __init__(self,path,base,keys=[],padding=True,pad_size=300):
+        super().__init__(path,base,keys=keys)
+        self.pad_size=pad_size
+        self.padding=padding
+
+    def __getitem__(self, idx):
+        if idx>=len(self):
+            return IndexError
+        patient_path=self.patients_path[idx]
+        seg_paths=self.seg_path[idx]
+        data=[]
+        files=os.listdir(patient_path)
+        files.sort(reverse=True)
+        for file in files:
+            file_path=os.path.join(patient_path,file)
+            with pydicom.dcmread(file_path,force=True) as dc:
+                image=dc.pixel_array
+                data.append(torch.tensor(image.astype("int16")))
+        data=torch.stack(data) 
+        segs={}
+        size=len(files)
+        pad_layer=torch.zeros(self.pad_size-size,512,512)
+        if self.padding:
+            data=torch.cat([data,pad_layer])
+        for key,seg_path in seg_paths.items():
+            seg=torch.tensor(np.asarray(nib.load(seg_path).dataobj,dtype=np.int16))
+            seg=torch.permute(seg,(2,1,0))
+            
+            if self.padding:
+                seg=torch.cat([seg,pad_layer])
+                segs[key]=torch.stack([seg,1-seg])
+            else:
+                segs[key]=torch.unsqueeze(seg,dim=0)
+            return torch.unsqueeze(data,dim=0),segs
+
 class PretrainingDataset(BaseDataset):
     def __init__(self,path,base,patients=None,patients_path=None):
         super().__init__(path,base,patients=patients,patients_path=patients_path)
@@ -273,18 +310,11 @@ class PatchProvider:
         data=torch.zeros(self.patch_size*self.block_size,self.patch_size*self.block_size,self.patch_size*self.block_size)
         for i in range(self.patch_size**3):
             x_pos,y_pos,z_pos=self.axis_index(i,self.patch_size,self.patch_size)
-            #print(x_pos,y_pos,z_pos)
             patch_x_start,patch_y_start,patch_z_start=(x_start+self.block_size*(x_pos-1),y_start+self.block_size*(y_pos-1),z_start+self.block_size*(z_pos-1))
             patch_x_end,patch_y_end,patch_z_end=(patch_x_start+self.block_size,patch_y_start+self.block_size,patch_z_start+self.block_size)
-            #print(i)
-            #print(patch_x_start,patch_y_start,patch_z_start)
-            #print(patch_x_end,patch_y_end,patch_z_end)
-
             if x_pos==(self.patch_size//2) and y_pos==(self.patch_size//2) and z_pos==(self.patch_size//2) and list(self.labels.keys())[0]=="label":
                 continue
             if patch_x_start>=0 and patch_y_start>=0 and patch_z_start>=0 and patch_x_end<=size[2] and patch_y_end<=size[1] and patch_z_end<=size[0]:
-                #print(data.size())
-                #print(self.cube[patch_z_start:patch_z_end,patch_y_start:patch_y_end,patch_x_start:patch_x_end].size())
                 data[z_pos*self.block_size:(z_pos+1)*self.block_size,y_pos*self.block_size:(y_pos+1)*self.block_size,x_pos*self.block_size:(x_pos+1)*self.block_size]=self.cube[patch_z_start:patch_z_end,patch_y_start:patch_y_end,patch_x_start:patch_x_end]
         #print(x_pos,y_pos,z_pos)
         if with_label:
@@ -401,6 +431,19 @@ class LungRadiomicsDataset(SegmentationDataset):
         path=LUNG_RADIOMICS_PATH
         super().__init__(path,"LUNG1-",keys=keys)
 
+class VolumeLungRadiomicsDataset(VolumeSegmentationDataset):
+    def __init__(self,keys=["GTV-1"]):
+        path=LUNG_RADIOMICS_PATH
+        super().__init__(path,"LUNG1-",keys=keys,padding=True,pad_size=MAX_DEPTH)
+
+class VolumeLungRadiomicsInterobserverDataset(VolumeSegmentationDataset):
+    def __init__(self,keys=["GTV-1vis-5"]):
+        path=LUNG_RADIOMICS_INTEROBS_PATH
+        super().__init__(path,"interobs",keys=keys,padding=True,pad_size=MAX_DEPTH)
+
+    def collate_fn(self,data):
+        #print(data)
+        return data
 
 if __name__=="__main__":
     print("start")

@@ -13,6 +13,7 @@ CONFIG_MDOEL=CONFIG["MODEL"]
 PATCH_SIZE=int(CONFIG_DATASET["PATCHSIZE"])
 BLOCK_SIZE=int(CONFIG_DATASET["BLOCKSIZE"])
 IMAGE_SIZE=int(CONFIG_DATASET["IMAGESIZE"])
+MAX_DEPTH=CONFIG_DATASET.getint("MAX_DEPTH")
 INPUT_IMAGE_SIZE=BLOCK_SIZE*PATCH_SIZE
 EMBED_DIM=CONFIG_MDOEL.getint("EMBED_DIM")
 NUM_HEADS=CONFIG_MDOEL.getint("NUM_HEADS")
@@ -51,6 +52,30 @@ class PatchEmbed(nn.Module):
         #print(x.shape)
         #x = self.norm(x)
         #print(x.shape)
+        return x
+
+class VolumePatchEmbed(nn.Module):
+    """ 3D Image to Patch Embedding
+    """
+    def __init__(self, img_size=IMAGE_SIZE,img_depth=MAX_DEPTH, patch_size=BLOCK_SIZE, in_chans=2, embed_dim=BLOCK_SIZE**3, norm_layer=None, flatten=True):
+        super().__init__()
+        img_size = (img_depth,img_size,img_size)
+        patch_size = (patch_size,patch_size,patch_size)
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.grid_size = (img_size[0] // patch_size[0], img_size[1] // patch_size[1],img_size[2]//patch_size[2])
+        #print(self.grid_size)
+        self.num_patches = self.grid_size[0] * self.grid_size[1] * self.grid_size[2]
+        #print(self.num_patches)
+        self.flatten = flatten
+        self.proj = nn.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        #self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def forward(self, x):
+        B, C, D, H, W = x.shape
+        x = self.proj(x)
+        if self.flatten:
+            x = x.flatten(2).transpose(1, 2)  # BCDHW -> BNDim
         return x
 
 class MyAttention(nn.Module):
@@ -94,11 +119,33 @@ class MyBlock(nn.Module):
 
     def forward(self, x):
         #print(x.shape)
-        #x = x + self.drop_path(self.norm1(self.attn(x)+x))
+        #x = x + self.drop_path(self.norm1(self.attn(x)))
         x = self.drop_path(self.norm1(self.attn(x)+x))
         #print(x.shape)
-        #x = x + self.drop_path(self.norm2(self.mlp(x)+x))
+        #x = x + self.drop_path(self.norm2(self.mlp(x)))
         x = x+self.drop_path(self.norm2(self.mlp(x)))
+        return x
+
+class VolumeBlock(nn.Module):
+    def __init__(self, dim, hiddendim,outdim,num_heads, qkv_bias=False, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.ReLU, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = MyAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(outdim)
+        #mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=hiddendim,out_features=outdim, act_layer=act_layer, drop=drop)
+
+    def forward(self, x):
+        #print(x.shape)
+        #x = x + self.drop_path(self.norm1(self.attn(x)))
+        #print(x.shape)
+        x = self.drop_path(self.norm1(self.attn(x)+x))
+        #print(x.shape)
+        #x = x + self.drop_path(self.norm2(self.mlp(x)))
+        x = self.drop_path(self.norm2(self.mlp(x)))
         return x
 
 class ThreeDimensionalTransformer(VisionTransformer):
@@ -274,12 +321,55 @@ class DepthwiseSeparableConv3d(nn.Module):
         out = self.pointwise(out)
         return out
 
+class VolumeTransformer(VisionTransformer):
+    def __init__(self, img_size=IMAGE_SIZE, patch_size=32, in_chans=1, out_chans=2, embed_dim=EMBED_DIM, 
+                 num_heads=NUM_HEADS, mlp_ratio=0.25, qkv_bias=True, representation_size=None, distilled=False,
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=VolumePatchEmbed,norm_layer=nn.LayerNorm,act_layer=nn.ReLU,pretrain=False):
+        super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,num_heads=num_heads,embed_layer=embed_layer)
+        self.out_chans=out_chans
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches, embed_dim))
+
+        self.block1=VolumeBlock(dim=1024,hiddendim=512,outdim=512,num_heads=num_heads)
+        self.block2=VolumeBlock(dim=512,hiddendim=256,outdim=256,num_heads=num_heads)
+        self.block3=VolumeBlock(dim=256,hiddendim=128,outdim=128,num_heads=num_heads)
+        self.block4=VolumeBlock(dim=128,hiddendim=128,outdim=256,num_heads=num_heads)
+        self.block5=VolumeBlock(dim=256,hiddendim=256,outdim=512,num_heads=num_heads)
+        self.block6=VolumeBlock(dim=512,hiddendim=1024,outdim=4096,num_heads=num_heads)
+        self.block7=VolumeBlock(dim=4096,hiddendim=8192,outdim=65536,num_heads=num_heads)
+        self.norm=partial(nn.LayerNorm, eps=1e-6)(65536)
+        #self.representation=nn.Linear(self.patch_embed.num_patches,1)
+        #self.act_layer=act_layer()
+        #self.output=nn.Linear(embed_dim,patch_size**3*out_chans)
+        self.softmax=nn.Softmax(dim=1) if not pretrain else nn.Conv3d(2,1,1)
+
+    def forward(self, x):
+        #x = self.forward_features(x)
+        #print(x.shape)
+        x = self.patch_embed(x)
+        #print(x.shape)
+        x = self.pos_drop(x + self.pos_embed)
+        #x = self.blocks(x)
+        x1=self.block1(x)
+        x2=self.block2(x1)
+        x=self.block3(x2)
+        x=self.block4(x)+x2
+        x=self.block5(x)+x1
+        x=self.block6(x)
+        x=self.block7(x)
+        x = self.norm(x)
+        #x=self.representation(x.transpose(1,2))
+        B,_,_=x.shape
+        output_shape=(B,self.out_chans)+self.patch_embed.img_size
+        #print(output_shape)
+        x=torch.reshape(x,output_shape)
+        x=self.softmax(x)
+        return x
+
 
 if __name__=="__main__":
-    x=torch.rand((1,1,24,24,24))
-    model=UNet()
+    x=torch.rand(1,1,MAX_DEPTH,IMAGE_SIZE,IMAGE_SIZE)
+    model=VolumeTransformer()
     y=model.forward(x)
-    #print(y)
     print(y.shape)
     print(y.max(),y.min())
 

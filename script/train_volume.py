@@ -13,26 +13,26 @@ import matplotlib.pyplot as plt
 from memory_profiler import profile
 import gc
 
-from dataset import CONFIG_DATASET, LungRadiomicsInterobserverDataset,LungRadiomicsDataset
+from dataset import CONFIG_DATASET,VolumeLungRadiomicsDataset,VolumeLungRadiomicsInterobserverDataset
 from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryDSLManager,BCE_with_DiceLoss
 from metrics import DSC, DSCManager,BinaryDSC,BinaryDSCManager
 from utility import OutputLogger, measure_time
-from model import VolumeTransformer,ThreeDimensionalTransformer,ThreeDimensionalUNet,load_model,save_model
+from model import VolumeTransformer,ThreeDimensionalUNet,load_model,save_model
 from config import CONFIG
 
 now=datetime.datetime.now()
 CONFIG_PATH=CONFIG["PATH"]
 CONFIG_TRAIN=CONFIG["Training"]
 Datasets={
-    0:"LungRadiomicsInterobserverDataset",
-    1:"LungRadiomicsDataset",
+    0:"VolumeLungRadiomicsInterobserverDataset",
+    1:"VolumeLungRadiomicsDataset",
 }
 Keyslist={
     0:["GTV-1vis-5"],
     1:["GTV-1"],
     }
 Models={
-    0:"ThreeDimensionalTransformer",
+    0:"VolumeTransformer",
     1:"ThreeDimensionalUNet"
 }
 DATASET_ID=CONFIG_TRAIN.getint("DATASET_ID")
@@ -64,87 +64,33 @@ DSC_on_training_Index=0
 #torch.backends.cudnn.benchmark = True
 #torch.backends.cudnn.enabled = False
 
-
-@measure_time
-#@profile
-def train_one_loader(model,optimizer,loss_function,trainloader):
-    global Loss_for_one_patch_Index
-    dscmanager=BinaryDSCManager(keys=LABEL_KEYS)
-    dslmanager=BinaryDSLManager(keys=LABEL_KEYS)
-    #dslmanager2=DSLManager(keys=LABEL_KEYS)
-    for data,labels in tqdm(trainloader,disable=not TQDM_ENABLED):
-        """if list(labels.values())[0][:,0].max()==0:
-            del data,labels
-            torch.cuda.empty_cache()
-            gc.collect()
-            continue"""
-        labels={key:value.to(DEVICE) for key,value in labels.items()}
-        data=data.to(DEVICE)
-        optimizer.zero_grad()
-        pre=model(data)
-        dscmanager.register(pre,labels)
-        dslmanager.register(pre,labels)
-        #dslmanager2.register(pre,labels)
-        loss=loss_function(pre,labels,keys=LABEL_KEYS)
-        #print(f"loss:{loss}")
-        loss.backward()
-        optimizer.step()
-        
-        WRITER.add_scalar("process/loss_for_one_patch",loss,Loss_for_one_patch_Index)
-        Loss_for_one_patch_Index+=1
-        del data,loss,pre,labels
-        torch.cuda.empty_cache()
-        gc.collect()
-        if DEBUG:
-            break
-    dsc=dscmanager.calculate()
-    loss=dslmanager.calculate()
-    #dslmanager2.calculate()
-    del dscmanager
-    gc.collect()
-    return model,dsc,loss
-
-@measure_time
-#@profile
-def validate_one_loader(model,valloader):
-    dsc_man=BinaryDSCManager(keys=LABEL_KEYS)
-    dsl_man=BinaryDSLManager(keys=LABEL_KEYS)
-    for data,labels in tqdm(valloader,disable=not TQDM_ENABLED):
-        data=data.to(DEVICE)
-        labels={key:value.to(DEVICE) for key,value in labels.items()}
-        pre=model(data)
-        dsc_man.register(pre,labels)
-        dsl_man.register(pre,labels)
-        del data,labels,pre
-        torch.cuda.empty_cache()
-        gc.collect()
-        if DEBUG:
-            break
-    dsc=dsc_man.calculate()
-    loss=dsl_man.calculate()
-    del dsc_man,dsl_man
-    gc.collect()
-    #print(dsc,loss)
-    return dsc,loss
-
 @measure_time
 def train(model,traindata,valdata):
-    global DSC_on_evaluation_Index,DSC_Avg_for_one_epoch_Index,DSC_on_training_Index
+    global WRITER,DSC_on_evaluation_Index,DSC_Avg_for_one_epoch_Index,DSC_on_training_Index
     loss_function=DiceLoss
+    metric=DSC
     optimizer=Adam(model.parameters(),lr=LEARNINGLATE)
     for epoch in tqdm(range(1,EPOCH+1),disable=not TQDM_ENABLED):
         print(f"------------EPOCH {epoch}/{EPOCH}------------")
         model.train()
-        for patch_provider in tqdm(traindata,disable=not TQDM_ENABLED):
-            trainloader=DataLoader(patch_provider,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
-            #print(list(model.parameters())[2][0,0,0,:,:])
-            model,dsc,loss=train_one_loader(model,optimizer,loss_function,trainloader)
-            #print(list(model.parameters())[2][0,0,0,:,:])
+        trainloader=DataLoader(traindata,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
+        for data,labels in tqdm(trainloader,disable=not TQDM_ENABLED):
+            data=data.to(DEVICE)
+            labels={key:value.to(DEVICE) for key,value in labels.items()}
+            optimizer.zero_grad()
+            pre=model(data)
+            loss=loss_function(pre,labels,keys=LABEL_KEYS)
+            loss.backward()
+            optimizer.step()
+            dsc=metric(pre,labels,keys=LABEL_KEYS)
             WRITER.add_scalar("process/DSC_on_training",dsc,DSC_on_training_Index)
             DSC_on_training_Index+=1
             print("Image Dice Similarity Coefficient",dsc)
             print("finish training")
             print(f"whole loss {loss}")
+            del data,loss,pre,labels
+            torch.cuda.empty_cache()
+            gc.collect()
             if DEBUG or DEBUG2:
                 break
         model.eval()
@@ -152,18 +98,25 @@ def train(model,traindata,valdata):
         with torch.no_grad():  
             loss_list=[]
             dsc_list=[]
-            for patchprovider in tqdm(valdata,disable=not TQDM_ENABLED):
-                #print(patchprovider)
-                valloader=DataLoader(patchprovider,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
-                dsc,loss=validate_one_loader(model,valloader)
-                #print(list(model.parameters())[2][0,0,0,:,:])   
+            valloader=DataLoader(valdata,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
+            for data,labels in tqdm(valloader,disable=not TQDM_ENABLED):
+                data=data.to(DEVICE)
+                labels={key:value.to(DEVICE) for key,value in labels.items()}
+                pre=model(data)
+                loss=loss_function(pre,labels,keys=LABEL_KEYS)
+                dsc=metric(pre,labels,keys=LABEL_KEYS)
+
                 WRITER.add_scalar("process/DSC_on_evaluation",dsc,DSC_on_evaluation_Index)
                 DSC_on_evaluation_Index+=1
                 #print(dsc,loss)
                 loss_list.append(loss)
                 dsc_list.append(dsc)
+                del data,labels,pre
+                torch.cuda.empty_cache()
+                gc.collect()
                 if DEBUG or DEBUG2:
                     break
+                
                 
             loss_list=torch.stack(loss_list)
             dsc_list=torch.stack(dsc_list)
