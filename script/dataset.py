@@ -103,19 +103,15 @@ class BaseDataset (Dataset):
 
 class SegmentationDataset(BaseDataset):
     def __init__(self,path,base,keys=[]):
-        self.descriptions=keys
+        self.keys=keys
         super().__init__(path,base)
         
-
     def check_data(self):
         patients_list=[]
         seg_path_list=[]
         patients_path_list=[]
-        #print(self.patients)
         for idx,patient in tqdm(enumerate(self.patients)):
-            #print(patient)
             path=self.get_path(idx)
-            #print(path)
             if os.path.split(path)[-1]=="LICENSE":
                 continue
             dic=dict({})
@@ -123,44 +119,34 @@ class SegmentationDataset(BaseDataset):
             seg_size=0
 
             for root,dirs,files in os.walk(path):
-                #print(root,dirs,files)
                 if files:
                     file=files[0]
                     dirname=os.path.split(root)[-1]
                     if "Segmentation" in dirname:
                         filepaths=[]
                         dic["seg"]={}
-                        #print(self.descriptions)
-                        for key in self.descriptions:
+                        for key in self.keys:
                             filepath=os.path.join(root,f"Segmentation-{key}.nii.gz")
                             filepaths.append(filepath)
                             if os.path.isfile(filepath):
                                 dic["seg"][key]=filepath
                                 seg_size=nib.load(filepath).shape[2]                 
-                    elif len(files)!=1:
-                        #print(root)                      
+                    elif len(files)!=1:                      
                         with pydicom.dcmread(os.path.join(root,file),force=True) as dc:
-                            #print(type(dc.pixel_array))
                             raw_size=len(files)
-                            #print(len(files))
                             dic["raw"]=root
             if "raw" in dic.keys() and "seg" in dic.keys() and seg_size==raw_size:
-            #(seg_shape[0]%raw_size)==0:
                 patients_list.append(self.patients[idx])
                 patients_path_list.append(dic["raw"])
                 seg_path_list.append(dic["seg"])
-                #interpolated_path_list.append(dic["itp"])
             else:
                 pass
-                #print(root)
         
         self.patients_path=patients_path_list
         self.patients=patients_list
         self.seg_path=seg_path_list
 
-
     def __getitem__(self,idx):
-        #print(f"len(self){len(self)} -idx {idx}")
         if idx>=len(self):
             return IndexError
         patient_path=self.patients_path[idx]
@@ -176,22 +162,11 @@ class SegmentationDataset(BaseDataset):
         data=torch.stack(data) 
         segs={}
         for key,seg_path in seg_paths.items():
-            seg=torch.tensor(nib.load(seg_path).get_fdata().astype("int16")) 
+            seg=torch.tensor(np.asarray(nib.load(seg_path).dataobj,dtype=np.int16))
             seg=torch.permute(seg,(2,1,0))
             segs[key]=seg
-        descriptions=self.descriptions
-
-        #print(data.size())
-        #print(seg.size())
-        """with pydicom.dcmread(seg_path,force=True) as dc:
-            #print(dc.pixel_array.shape)
-            seg=torch.tensor(dc.pixel_array.astype("int16"))
-            for seq in dc.SegmentSequence:
-                #print(dir(seq))
-                descriptions.append(seq.SegmentDescription)"""
-            #print(seg.dtype)
         
-        return LabeledPatchProvider(data,labels=segs,descriptions=descriptions,cut_zeros=False,cut_key=self.descriptions[0])
+        return LabeledPatchProvider(data,labels=segs,cut_zeros=False,cut_key=self.keys[0])
 
     def __len__(self):
         return len(self.patients_path)
@@ -222,7 +197,7 @@ class PretrainingDataset(BaseDataset):
         return super().__getitem__(self.base_idx)[1][idx-self.pos]
 
 class PatchProvider:
-    def __init__(self,cube,patch_size=PATCH_SIZE,block_size=BLOCK_SIZE,image_size=IMAGE_SIZE,labels=None,descriptions=None,cut_zeros=False,cut_key=None):
+    def __init__(self,cube,patch_size=PATCH_SIZE,block_size=BLOCK_SIZE,image_size=IMAGE_SIZE,labels=None,cut_zeros=False,cut_key=None):
         self.cube=self.normalize(cube,cube.min(),cube.max())
         self.patch_size=patch_size
         self.block_size=block_size
@@ -241,23 +216,10 @@ class PatchProvider:
         padding_layer=torch.zeros([layers,self.image_size,self.image_size])
         self.cube=torch.cat([self.cube,padding_layer])
         if labels!=None:
-            #label=self.normalize(label,label.min(),label.max())
-            #print(label.size(),self.original_size)
-            #labels=torch.split(label,self.original_size[0])
             self.labels={}
-            #print(labels[0].size())
-            #print(len(labels),len(descriptions))
-            #print(descriptions)
             for key,value in labels.items():
                 label=torch.cat([value,padding_layer])
                 self.labels[key]=self.normalize(label,label.min(),label.max())
-            """for i,label in enumerate(labels):
-                if key:
-                    if key==descriptions[i]:
-                        self.labels[descriptions[i]]=torch.cat([label,padding_layer])
-                else:
-                    self.labels[descriptions[i]]=torch.cat([label,padding_layer])              
-            del labels"""
             gc.collect()
         else:
             self.label=self.cube
