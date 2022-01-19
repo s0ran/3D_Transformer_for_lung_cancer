@@ -10,9 +10,9 @@ from functools import partial
 
 CONFIG_DATASET=CONFIG["Dataset"]
 CONFIG_MDOEL=CONFIG["MODEL"]
-PATCH_SIZE=int(CONFIG_DATASET["PATCHSIZE"])
-BLOCK_SIZE=int(CONFIG_DATASET["BLOCKSIZE"])
-IMAGE_SIZE=int(CONFIG_DATASET["IMAGESIZE"])
+PATCH_SIZE=CONFIG_DATASET.getint("PATCHSIZE")
+BLOCK_SIZE=CONFIG_DATASET.getint("BLOCKSIZE")
+IMAGE_SIZE=CONFIG_DATASET.getint("IMAGESIZE")
 MAX_DEPTH=CONFIG_DATASET.getint("MAX_DEPTH")
 INPUT_IMAGE_SIZE=BLOCK_SIZE*PATCH_SIZE
 EMBED_DIM=CONFIG_MDOEL.getint("EMBED_DIM")
@@ -61,6 +61,7 @@ class VolumePatchEmbed(nn.Module):
         super().__init__()
         img_size = (img_depth,img_size,img_size)
         patch_size = (patch_size,patch_size,patch_size)
+        #print(img_size,patch_size)
         self.img_size = img_size
         self.patch_size = patch_size
         self.grid_size = (img_size[0] // patch_size[0], img_size[1] // patch_size[1],img_size[2]//patch_size[2])
