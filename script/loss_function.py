@@ -5,6 +5,7 @@ from collections import defaultdict
 import gc
 
 DEVICE=torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+WEIGHT=[1,1]
 
 def generalDiceLoss(output,target):
     smooth=1.
@@ -33,7 +34,7 @@ def BinaryDiceLoss(output,targets,keys=None):
         #print(intersection,oflat.sum(),tflat.sum())
 
         answer= 1 - ((2. * intersection + smooth) /
-                  (oflat.sum() + tflat.sum() + smooth))
+                  ((oflat*oflat).sum() + (tflat*tflat).sum() + smooth))
         answers.append(answer)
         #answers=torch.cat([answers,answer])
         del answer
@@ -68,7 +69,7 @@ def customBCELoss(output,targets,keys=None):
     loss_function=nn.BCELoss()
     answers=[]
     for key,target in targets.items():
-        answers.append(loss_function(output,target))
+        answers.append(loss_function(output[:,0],target[:,0]))
         
     return torch.mean(torch.stack(answers))
 
@@ -87,11 +88,34 @@ def DiceLoss(output,targets,keys=None):
         intersection = (oflat * tflat).sum()
 
         answer= 1 - ((2. * intersection + smooth) /
-                  (oflat.sum() + tflat.sum() + smooth))
+                  ((oflat*oflat).sum() + (tflat*tflat).sum() + smooth))
         answers.append(answer)
         #answers=torch.cat([answers,answer])
         del answer
     return torch.mean(torch.stack(answers))
+
+def weightDiceLoss(output,targets,keys=None):
+    smooth = 1.
+    #answers=[]
+    weightanswer=0
+    for c in range(2):
+        output=output[:,c,:,:,:]
+        answers=[]
+        keys=keys if keys else list(targets.keys())
+
+        for key in keys:
+            target=targets[key]
+            target=target[:,c,:,:,:]
+            oflat = output.flatten()
+            tflat = target.flatten()
+            intersection = (oflat * tflat).sum()
+
+            answer= ((2. * intersection + smooth) /
+                      ((oflat*oflat).sum() + (tflat*tflat).sum() + smooth))
+            answers.append(answer)
+            #answers=torch.cat([answers,answer])
+        weightanswer+=torch.mean(torch.stack(answers))*WEIGHT[c]/sum(WEIGHT)
+        return 1-weightanswer
 
 class DSLManager():
     def __init__(self,keys=[]):
@@ -113,8 +137,7 @@ class DSLManager():
             intersection = (oflat * tflat).sum()
             self.sum_of_intersection[key]+=intersection
             self.sum_flats[key]+=(oflat.sum()+tflat.sum())
-            #print("intersection",intersection)
-            #print("flat sum",(oflat.sum()+tflat.sum()))
+
             del tflat
         del oflat
         gc.collect()     
@@ -152,7 +175,7 @@ class BinaryDSLManager():
             tflat=torch.flatten(target)
             intersection = (oflat * tflat).sum()
             self.sum_of_intersection[key]+=intersection
-            self.sum_flats[key]+=(oflat.sum()+tflat.sum())
+            self.sum_flats[key]+=((oflat*oflat).sum()+(tflat*tflat).sum())
             #print("intersection",intersection)
             #print("flat sum",(oflat.sum()+tflat.sum()))
             del tflat

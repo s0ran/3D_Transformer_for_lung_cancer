@@ -73,7 +73,9 @@ class VolumePatchEmbed(nn.Module):
 
     def forward(self, x):
         B, C, D, H, W = x.shape
+        #print(x.shape)
         x = self.proj(x)
+        #print(x.shape)
         if self.flatten:
             x = x.flatten(2).transpose(1, 2)  # BCDHW -> BNDim
         return x
@@ -149,11 +151,11 @@ class VolumeBlock(nn.Module):
         return x
 
 class ThreeDimensionalTransformer(VisionTransformer):
-    def __init__(self, img_size=INPUT_IMAGE_SIZE, patch_size=BLOCK_SIZE, in_chans=1, out_chans=2, embed_dim=EMBED_DIM, depth=DEPTH,
+    def __init__(self, img_size=INPUT_IMAGE_SIZE, patch_size=BLOCK_SIZE, in_chans=1, num_classes=2, embed_dim=EMBED_DIM, depth=DEPTH,
                  num_heads=NUM_HEADS, mlp_ratio=0.25, qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed,norm_layer=nn.LayerNorm,act_layer=nn.ReLU,pretrain=False):
         super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,num_heads=num_heads,embed_layer=embed_layer)
-        self.out_chans=out_chans
+        self.num_classes=num_classes
         self.depth=depth
         self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches, embed_dim))
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -164,7 +166,7 @@ class ThreeDimensionalTransformer(VisionTransformer):
             for i in range(depth)])
         self.representation=nn.Linear(self.patch_embed.num_patches,1)
         #self.act_layer=act_layer()
-        #self.output=nn.Linear(embed_dim,patch_size**3*out_chans)
+        #self.output=nn.Linear(embed_dim,patch_size**3*num_classes)
         self.softmax=nn.Softmax(dim=1) if not pretrain else nn.Conv3d(2,1,1)
 
     def forward(self, x):
@@ -188,7 +190,7 @@ class ThreeDimensionalTransformer(VisionTransformer):
         #x=super().forward(x)
         #print(x.shape) B 1 W^3xC
         B,_,_=x.shape
-        output_shape=(B,self.out_chans)+self.patch_embed.patch_size
+        output_shape=(B,self.num_classes)+self.patch_embed.patch_size
         x=torch.reshape(x,output_shape)
         x=self.softmax(x)
         return x
@@ -321,25 +323,43 @@ class DepthwiseSeparableConv3d(nn.Module):
         out = self.pointwise(out)
         return out
 
-class VolumeTransformer(VisionTransformer):
-    def __init__(self, img_size=IMAGE_SIZE, patch_size=32, in_chans=1, out_chans=2, embed_dim=EMBED_DIM, 
+class VolumeTransformer(nn.Module):
+    def __init__(self, img_size=IMAGE_SIZE, patch_size=32, in_chans=1, num_classes=2, embed_dim=EMBED_DIM, 
                  num_heads=NUM_HEADS, mlp_ratio=0.25, qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=VolumePatchEmbed,norm_layer=nn.LayerNorm,act_layer=nn.ReLU,pretrain=False):
-        super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,num_heads=num_heads,embed_layer=embed_layer)
-        self.out_chans=out_chans
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches, embed_dim))
+        #super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,num_heads=num_heads,embed_layer=embed_layer)
+        super().__init__()
+        #self.num_classes = num_classes
+        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_tokens = 2 if distilled else 1
+        norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
+        act_layer = act_layer or nn.GELU
+        self.embed_dim=embed_dim
+        self.patch_embed = embed_layer(
+            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
+        num_patches = self.patch_embed.num_patches
+
+        #self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        #self.dist_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if distilled else None
+        #self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+        self.num_classes=num_classes
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        
 
         self.block1=VolumeBlock(dim=1024,hiddendim=512,outdim=512,num_heads=num_heads)
         self.block2=VolumeBlock(dim=512,hiddendim=256,outdim=256,num_heads=num_heads)
         self.block3=VolumeBlock(dim=256,hiddendim=128,outdim=128,num_heads=num_heads)
         self.block4=VolumeBlock(dim=128,hiddendim=128,outdim=256,num_heads=num_heads)
         self.block5=VolumeBlock(dim=256,hiddendim=256,outdim=512,num_heads=num_heads)
-        self.block6=VolumeBlock(dim=512,hiddendim=1024,outdim=4096,num_heads=num_heads)
-        self.block7=VolumeBlock(dim=4096,hiddendim=8192,outdim=65536,num_heads=num_heads)
-        self.norm=partial(nn.LayerNorm, eps=1e-6)(65536)
+        self.block6=VolumeBlock(dim=512,hiddendim=512,outdim=2048,num_heads=1)
+        #self.block7=VolumeBlock(dim=4096,hiddendim=8192,outdim=65536,num_heads=num_heads)
+        self.norm=partial(nn.LayerNorm, eps=1e-6)(2048)
         #self.representation=nn.Linear(self.patch_embed.num_patches,1)
         #self.act_layer=act_layer()
-        #self.output=nn.Linear(embed_dim,patch_size**3*out_chans)
+        #self.output=nn.Linear(embed_dim,patch_size**3*num_classes)
+        self.invconv=nn.ConvTranspose3d(2048,2,kernel_size=self.patch_embed.patch_size,stride=self.patch_embed.patch_size)
         self.softmax=nn.Softmax(dim=1) if not pretrain else nn.Conv3d(2,1,1)
 
     def forward(self, x):
@@ -355,13 +375,17 @@ class VolumeTransformer(VisionTransformer):
         x=self.block4(x)+x2
         x=self.block5(x)+x1
         x=self.block6(x)
-        x=self.block7(x)
+        #x=self.block7(x)
         x = self.norm(x)
         #x=self.representation(x.transpose(1,2))
         B,_,_=x.shape
-        output_shape=(B,self.out_chans)+self.patch_embed.img_size
-        #print(output_shape)
-        x=torch.reshape(x,output_shape)
+        embed_shape=(B,self.num_classes*self.embed_dim)+self.patch_embed.grid_size
+        x=torch.reshape(x,embed_shape)
+        #print(x.shape)
+        x=self.invconv(x)
+        #print(x.shape)
+        #output_shape=(B,self.num_classes)+self.patch_embed.img_size
+        #x=torch.reshape(x,output_shape)
         x=self.softmax(x)
         return x
 
@@ -370,6 +394,7 @@ if __name__=="__main__":
     x=torch.rand(1,1,MAX_DEPTH,IMAGE_SIZE,IMAGE_SIZE)
     model=VolumeTransformer()
     y=model.forward(x)
+    
     print(y.shape)
     print(y.max(),y.min())
 
