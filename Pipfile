@@ -11,9 +11,9 @@ matplotlib = "*"
 jupyter = "*"
 timm = "*"
 tqdm = "*"
-tensorboard = "*"
 memory-profiler = "*"
 nibabel = "*"
+tensorboard = "*"
 
 [dev-packages]
 

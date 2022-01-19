@@ -130,7 +130,7 @@ def validate_one_loader(model,valloader):
 @measure_time
 def train(model,traindata,valdata):
     global DSC_on_evaluation_Index,DSC_Avg_for_one_epoch_Index,DSC_on_training_Index
-    loss_function=DiceLoss
+    loss_function=BCE_with_DiceLoss
     optimizer=Adam(model.parameters(),lr=LEARNINGLATE)
     for epoch in tqdm(range(1,EPOCH+1),disable=not TQDM_ENABLED):
         print(f"------------EPOCH {epoch}/{EPOCH}------------")
@@ -177,7 +177,7 @@ def train(model,traindata,valdata):
             print("DSC standard deviation : ",dsc_std)  
         if DEBUG or DEBUG2:
             break
-        save_model(model,os.path.join(TRAIN_PATH_BASE,f"{ID}-{epoch}.txt"))
+        save_model(model,os.path.join(TRAIN_PATH_BASE,f"{ID}-{epoch}.pt"))
     return model
   
 @measure_time

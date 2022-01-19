@@ -14,8 +14,8 @@ from memory_profiler import profile
 import gc
 
 from dataset import CONFIG_DATASET,VolumeLungRadiomicsDataset,VolumeLungRadiomicsInterobserverDataset
-from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryDSLManager,BCE_with_DiceLoss
-from metrics import DSC, DSCManager,BinaryDSC,BinaryDSCManager
+from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryDSLManager,BCE_with_DiceLoss,weightDiceLoss
+from metrics import DSC, DSCManager,BinaryDSC,BinaryDSCManager,weightDSC
 from utility import OutputLogger, measure_time
 from model import VolumeTransformer,ThreeDimensionalUNet,load_model,save_model
 from config import CONFIG
@@ -61,33 +61,44 @@ DSC_on_evaluation_Index=0
 DSC_Avg_for_one_epoch_Index=0
 DSC_on_training_Index=0
 
-#torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = True
 #torch.backends.cudnn.enabled = False
+
+def information():
+    print(ID)
+    print(MODEL_TYPE)
+    print(DATASET)
+    print(DEVICE)
+    print(LABEL_KEYS)
 
 @measure_time
 def train(model,traindata,valdata):
     global WRITER,DSC_on_evaluation_Index,DSC_Avg_for_one_epoch_Index,DSC_on_training_Index
-    loss_function=DiceLoss
-    metric=DSC
+    loss_function=weightDiceLoss
+    metric=weightDSC
     optimizer=Adam(model.parameters(),lr=LEARNINGLATE)
     for epoch in tqdm(range(1,EPOCH+1),disable=not TQDM_ENABLED):
         print(f"------------EPOCH {epoch}/{EPOCH}------------")
         model.train()
         trainloader=DataLoader(traindata,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
         for data,labels in tqdm(trainloader,disable=not TQDM_ENABLED):
+            #print(data.size())
             data=data.to(DEVICE)
             labels={key:value.to(DEVICE) for key,value in labels.items()}
             optimizer.zero_grad()
             pre=model(data)
-            loss=loss_function(pre,labels,keys=LABEL_KEYS)
+            loss=loss_function(pre,labels)
+            #print(loss)
             loss.backward()
             optimizer.step()
-            dsc=metric(pre,labels,keys=LABEL_KEYS)
-            WRITER.add_scalar("process/DSC_on_training",dsc,DSC_on_training_Index)
-            DSC_on_training_Index+=1
-            print("Image Dice Similarity Coefficient",dsc)
-            print("finish training")
-            print(f"whole loss {loss}")
+            #dsc=metric(pre,labels,keys=LABEL_KEYS)
+            with torch.no_grad():
+                dsc=metric(pre,labels,keys=LABEL_KEYS)
+                WRITER.add_scalar("process/DSC_on_training",dsc,DSC_on_training_Index)
+                DSC_on_training_Index+=1
+                print("Image Dice Similarity Coefficient",dsc)
+                print("finish training")
+                print(f"whole loss {loss}")
             del data,loss,pre,labels
             torch.cuda.empty_cache()
             gc.collect()
@@ -105,7 +116,6 @@ def train(model,traindata,valdata):
                 pre=model(data)
                 loss=loss_function(pre,labels,keys=LABEL_KEYS)
                 dsc=metric(pre,labels,keys=LABEL_KEYS)
-
                 WRITER.add_scalar("process/DSC_on_evaluation",dsc,DSC_on_evaluation_Index)
                 DSC_on_evaluation_Index+=1
                 #print(dsc,loss)
@@ -115,9 +125,7 @@ def train(model,traindata,valdata):
                 torch.cuda.empty_cache()
                 gc.collect()
                 if DEBUG or DEBUG2:
-                    break
-                
-                
+                    break           
             loss_list=torch.stack(loss_list)
             dsc_list=torch.stack(dsc_list)
             loss_avg=torch.mean(loss_list)
@@ -130,7 +138,7 @@ def train(model,traindata,valdata):
             print("DSC standard deviation : ",dsc_std)  
         if DEBUG or DEBUG2:
             break
-        save_model(model,os.path.join(TRAIN_PATH_BASE,f"{ID}-{epoch}.txt"))
+        save_model(model,os.path.join(TRAIN_PATH_BASE,f"{ID}-{epoch}.pt"))
     return model
   
 @measure_time
@@ -152,6 +160,7 @@ def make_model():
     return model
 
 def main():
+    information()
     traindata,valdata=make_data()
     model=make_model()
     model=train(model,traindata,valdata)

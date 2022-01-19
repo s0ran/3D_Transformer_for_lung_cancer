@@ -4,6 +4,8 @@ from utility import measure_time
 from collections import defaultdict
 import gc
 
+WEIGHT=[1,1]
+
 def BinaryDSC(output,targets,keys=[]):
     smooth=1.
     answers=[]
@@ -44,6 +46,28 @@ def generalDSC(output,target):
     answer= (2. * intersection + smooth) / (oflat.sum() + tflat.sum() + smooth)
     return answer
 
+def weightDSC(output,targets,keys=None):
+    smooth = 1.
+    #answers=[]
+    weightanswer=0
+    for c in range(2):
+        output=output[:,c,:,:,:]
+        answers=[]
+        keys=keys if keys else list(targets.keys())
+
+        for key in keys:
+            target=targets[key]
+            target=target[:,c,:,:,:]
+            oflat = output.flatten()
+            tflat = target.flatten()
+            intersection = (oflat * tflat).sum()
+
+            answer= (2. * intersection + smooth) / ((oflat*oflat).sum() + (tflat*tflat).sum() + smooth)
+            answers.append(answer)
+            #answers=torch.cat([answers,answer])
+        weightanswer+=torch.mean(torch.stack(answers))*WEIGHT[c]
+        return weightanswer/sum(WEIGHT)
+
 class BinaryDSCManager:
     def __init__(self,keys=[]):
         self.smooth=1.
@@ -64,7 +88,7 @@ class BinaryDSCManager:
             tflat=torch.flatten(target)
             intersection = (oflat * tflat).sum()
             self.sum_of_intersection[key]+=intersection
-            self.sum_flats[key]+=(oflat.sum()+tflat.sum())
+            self.sum_flats[key]+=((oflat*oflat).sum()+(tflat*tflat).sum())
             del tflat
         del oflat
         gc.collect()
@@ -91,14 +115,14 @@ class DSCManager:
         self.keys=keys
     
     def register(self,output,targets):
-        output=output[:,0,:,:,:]
+        output=output[:,0,:,:,:]>0.5
         oflat=torch.flatten(output)
         if not self.keys:
             self.keys=list(targets.keys())
         #print(targets.keys())
         for key in self.keys:
             target=targets[key]
-            target=target[:,0,:,:,:]
+            target=target[:,0,:,:,:]>0.5
             tflat=torch.flatten(target)
             intersection = (oflat * tflat).sum()
             self.sum_of_intersection[key]+=intersection
