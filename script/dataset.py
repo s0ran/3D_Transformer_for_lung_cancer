@@ -4,6 +4,7 @@ from re import X
 import sys
 import numpy as np
 import pydicom
+
 import torch
 from torch.utils.data import Dataset,DataLoader
 from config import CONFIG
@@ -18,6 +19,7 @@ import nibabel as nib
 from utility import measure_time
 from memory_profiler import profile
 
+TQDM_ENABLED=False
 CONFIG_DATASET=CONFIG["Dataset"]
 CONFIG_PATH=CONFIG["PATH"]
 PATCH_SIZE=CONFIG_DATASET.getint("PATCHSIZE")
@@ -27,6 +29,7 @@ MAX_DEPTH=CONFIG_DATASET.getint("MAX_DEPTH")
 LUNG_RADIOMICS_PATH=CONFIG_PATH["LUNG_RADIOMICS_PATH"]
 LUNG_RADIOMICS_INTEROBS_PATH=CONFIG_PATH["LUNG_RADIOMICS_INTEROBS_PATH"]
 LUNG_CT_PATH=CONFIG_PATH["LUNG_CT_PATH"]
+CUT_ZERO=True
 
 class BaseDataset (Dataset):
     def __init__(self,path,base,label=True,patients=None,patients_path=None):
@@ -102,9 +105,43 @@ class BaseDataset (Dataset):
             patch_provider=PatchProvider(data)        
         return patient_id,patch_provider
 
+class OnMemoryDataset(BaseDataset):
+    def __init__(self,path,base):
+        super().__init__(path,base)
+        self.register_data()
+
+    def check_data(self):
+        patients_list=[]
+        patients_path_list=[]
+        for idx,patient in tqdm(enumerate(self.patients)):
+            path=self.get_path(idx)
+            for root,dirs,files in os.walk(path):
+                #for file in files:
+                #file=files[0]
+                if files:
+                    file=files[0]
+                    with pydicom.dcmread(os.path.join(root,file),force=True) as dc:
+                        if dc.Modality=="CT" and len(dc.pixel_array.shape)==2 and not np.any(np.isnan(dc.pixel_array)):
+                            try:
+                                if not dc.Rows==dc.Columns==512:
+                                    print(dc.Row,dc.Columns)
+                                    raise ValueError(f"{dc.Row},{dc.Column}")                        
+                            except:
+                                break                  
+                            assert dc.Rows==dc.Columns==512
+                            
+                            patients_list.append(self.patients[idx])
+                            patients_path_list.append(root)
+                    break
+        self.patients_path=patients_path_list
+        self.patients=patients_list
+
+    def register_data(self):
+        pass
+
 class SegmentationDataset(BaseDataset):
-    def __init__(self,path,base,keys=[]):
-        self.keys=keys
+    def __init__(self,path,base,key=None):
+        self.key=key
         super().__init__(path,base)
         
     def check_data(self):
@@ -119,6 +156,82 @@ class SegmentationDataset(BaseDataset):
             raw_size=0
             seg_size=0
 
+            for root,dirs,files in os.walk(path):
+                if files:
+                    file=files[0]
+                    dirname=os.path.split(root)[-1]
+                    if "Segmentation" in dirname:
+                        filepaths=[]
+                        dic["seg"]={}
+                        key=self.key
+                        filepath=os.path.join(root,f"Segmentation-{key}.nii.gz")
+                        filepaths.append(filepath)
+                        if os.path.isfile(filepath):
+                            dic["seg"][key]=filepath
+                            seg_size=nib.load(filepath).shape[2]                 
+                    elif len(files)!=1:                      
+                        with pydicom.dcmread(os.path.join(root,file),force=True) as dc:
+                            raw_size=len(files)
+                            dic["raw"]=root
+            if "raw" in dic.keys() and "seg" in dic.keys() and seg_size==raw_size:
+                patients_list.append(self.patients[idx])
+                patients_path_list.append(dic["raw"])
+                seg_path_list.append(dic["seg"])
+            else:
+                pass
+        
+        self.patients_path=patients_path_list
+        self.patients=patients_list
+        self.seg_path=seg_path_list
+     
+
+    def __getitem__(self,idx):
+        if idx>=len(self):
+            return IndexError
+        patient_path=self.patients_path[idx]
+        seg_paths=self.seg_path[idx]
+        data=[]
+        files=os.listdir(patient_path)
+        files.sort(reverse=True)
+        for file in files:
+            file_path=os.path.join(patient_path,file)
+            with pydicom.dcmread(file_path,force=True) as dc:
+                image=dc.pixel_array
+                data.append(torch.tensor(image.astype("int16")))
+        data=torch.stack(data) 
+        segs={}
+        #for key,seg_path in seg_paths.items():
+        seg_path=seg_paths[self.key]
+        seg=torch.tensor(np.asarray(nib.load(seg_path).dataobj,dtype=np.int16))
+        seg=torch.permute(seg,(2,1,0))
+        segs[self.key]=seg       
+        return LabeledPatchProvider(data,labels=segs,cut_zeros=CUT_ZERO,cut_key=self.key)
+
+    def __len__(self):
+        return len(self.patients_path)
+
+class OMSegmentationDataset(BaseDataset):
+    def __init__(self,path,base,keys=[],patch=False,padding=False,pad_size=300):
+        self.keys=keys
+        super().__init__(path,base)
+        self.segmentation_data=[]
+        self.raw_data=[]
+        self.patch=patch
+        self.padding=padding
+        self.pad_size=pad_size
+        self.register_data()
+        
+    def check_data(self):
+        patients_list=[]
+        seg_path_list=[]
+        patients_path_list=[]
+        for idx,patient in tqdm(enumerate(self.patients),disable=True):
+            path=self.get_path(idx)
+            if os.path.split(path)[-1]=="LICENSE":
+                continue
+            dic=dict({})
+            raw_size=0
+            seg_size=0
             for root,dirs,files in os.walk(path):
                 if files:
                     file=files[0]
@@ -147,36 +260,74 @@ class SegmentationDataset(BaseDataset):
         self.patients=patients_list
         self.seg_path=seg_path_list
 
+    def register_data(self):
+        for idx in tqdm(range(len(self)),disable=not TQDM_ENABLED):
+            patient_path=self.patients_path[idx]
+            seg_paths=self.seg_path[idx]
+            data=[]
+            files=os.listdir(patient_path)
+            files.sort(reverse=True)
+            for file in files:
+                file_path=os.path.join(patient_path,file)
+                with pydicom.dcmread(file_path,force=True) as dc:
+                    image=dc.pixel_array
+                    data.append(torch.tensor(image.astype("int16")))
+            
+            data=torch.stack(data) 
+            data_size=data.size()[0]
+            segs={}
+            
+            pad_size=self.pad_size-data_size
+            pad_layer=torch.zeros(pad_size,512,512)
+            if self.padding:
+                data=torch.unsqueeze(torch.cat([data,pad_layer]),dim=0)
+            else:
+                data=torch.unsqueeze(data,dim=0)
+            #print(data.min(),data.max())
+
+            data=self.normalize(data,data.min(),data.max())
+                
+            for key,seg_path in seg_paths.items():
+                seg=torch.tensor(np.asarray(nib.load(seg_path).dataobj,dtype=np.int16))
+                seg=torch.permute(seg,(2,1,0))
+                
+                if self.padding:
+                    seg=torch.cat([seg,pad_layer])
+                    seg=self.normalize(seg,seg.min(),seg.max())
+                    segs[key]=torch.stack([seg,1-seg])
+                else:
+                    seg=self.normalize(seg,seg.min(),seg.max())
+                    segs[key]=torch.stack([seg,1-seg])
+                    #torch.unsqueeze(data,dim=0),segs  
+                    
+            self.segmentation_data.append(segs)
+            self.raw_data.append(data)
+
     def __getitem__(self,idx):
         if idx>=len(self):
             return IndexError
-        patient_path=self.patients_path[idx]
-        seg_paths=self.seg_path[idx]
-        data=[]
-        files=os.listdir(patient_path)
-        files.sort(reverse=True)
-        for file in files:
-            file_path=os.path.join(patient_path,file)
-            with pydicom.dcmread(file_path,force=True) as dc:
-                image=dc.pixel_array
-                data.append(torch.tensor(image.astype("int16")))
-        data=torch.stack(data) 
-        segs={}
-        for key,seg_path in seg_paths.items():
-            seg=torch.tensor(np.asarray(nib.load(seg_path).dataobj,dtype=np.int16))
-            seg=torch.permute(seg,(2,1,0))
-            segs[key]=seg
-        
-        return LabeledPatchProvider(data,labels=segs,cut_zeros=False,cut_key=self.keys[0])
+        data,segs=self.raw_data[idx],self.segmentation_data[idx]
+        if not self.patch:
+            return data,segs
+        else:   
+            #deplicate  
+            return LabeledPatchProvider(data,labels=segs,cut_zeros=False,cut_key=self.keys[0])
 
     def __len__(self):
         return len(self.patients_path)
 
+    def normalize(self,data,min,max):
+        #print(min,max)
+        if max==min:
+            return torch.zeros_like(data)
+        return (data-min)/(max-min)
+
 class VolumeSegmentationDataset(SegmentationDataset):
-    def __init__(self,path,base,keys=[],padding=True,pad_size=300):
-        super().__init__(path,base,keys=keys)
+    def __init__(self,path,base,key=None,padding=True,pad_size=300):
+        super().__init__(path,base,key=key)
         self.pad_size=pad_size
         self.padding=padding
+
 
     def __getitem__(self, idx):
         if idx>=len(self):
@@ -195,19 +346,33 @@ class VolumeSegmentationDataset(SegmentationDataset):
         segs={}
         size=len(files)
         pad_layer=torch.zeros(self.pad_size-size,512,512)
+        data=self.normalize(data,data.min(),data.max())
         if self.padding:
             data=torch.cat([data,pad_layer])
+
         for key,seg_path in seg_paths.items():
             seg=torch.tensor(np.asarray(nib.load(seg_path).dataobj,dtype=np.int16))
             seg=torch.permute(seg,(2,1,0))
             
             if self.padding:
                 seg=torch.cat([seg,pad_layer])
+                seg=self.normalize(seg,seg.min(),seg.max())
                 segs[key]=torch.stack([seg,1-seg])
             else:
+                seg=self.normalize(seg,seg.min(),seg.max())
                 segs[key]=torch.unsqueeze(seg,dim=0)
-            return torch.unsqueeze(data,dim=0),segs
 
+        data=torch.unsqueeze(data,dim=0)
+        #print(data.size(),data.min(),data.max())
+        #print(list(segs.values())[0].max())
+        return data,list(segs.values())[0]
+
+    def normalize(self,data,min,max):
+        #print(min,max)
+        if max==min:
+            return torch.zeros_like(data)
+        return (data-min)/(max-min)
+    
 class PretrainingDataset(BaseDataset):
     def __init__(self,path,base,patients=None,patients_path=None):
         super().__init__(path,base,patients=patients,patients_path=patients_path)
@@ -331,7 +496,7 @@ class PatchProvider:
             #data=torch.stack([data,1-data])
             data=torch.unsqueeze(data,0)
             #label=torch.stack([label,1-label])
-            return data,labels
+            return data,list(labels.values())[0]
         else:
             max=data.max()
             min=0
@@ -418,36 +583,56 @@ class LungCTFullImageDataset(BaseDataset):
         return image,label
 
 class LungRadiomicsInterobserverDataset(SegmentationDataset):
-    def __init__(self,keys=["GTV-1vis-5"]):
+    def __init__(self,key="GTV-1vis-5"):
         path=LUNG_RADIOMICS_INTEROBS_PATH
-        super().__init__(path,"interobs",keys=keys)
+        super().__init__(path,"interobs",key=key)
 
     def collate_fn(self,data):
         #print(data)
         return data
 
 class LungRadiomicsDataset(SegmentationDataset):
-    def __init__(self,keys=["GTV-1"]):
+    def __init__(self,key="GTV-1"):
         path=LUNG_RADIOMICS_PATH
-        super().__init__(path,"LUNG1-",keys=keys)
+        super().__init__(path,"LUNG1-",key=key)
 
 class VolumeLungRadiomicsDataset(VolumeSegmentationDataset):
-    def __init__(self,keys=["GTV-1"]):
+    def __init__(self,key="GTV-1"):
         path=LUNG_RADIOMICS_PATH
-        super().__init__(path,"LUNG1-",keys=keys,padding=True,pad_size=MAX_DEPTH)
+        super().__init__(path,"LUNG1-",key=key,padding=True,pad_size=MAX_DEPTH)
 
 class VolumeLungRadiomicsInterobserverDataset(VolumeSegmentationDataset):
-    def __init__(self,keys=["GTV-1vis-5"]):
+    def __init__(self,key="GTV-1vis-5"):
         path=LUNG_RADIOMICS_INTEROBS_PATH
-        super().__init__(path,"interobs",keys=keys,padding=True,pad_size=MAX_DEPTH)
+        super().__init__(path,"interobs",key=key,padding=True,pad_size=MAX_DEPTH)
 
     def collate_fn(self,data):
         #print(data)
         return data
 
+class OMLungRadDatasetPad(OMSegmentationDataset):
+    def __init__(self,keys=["GTV-1"]):
+        path=LUNG_RADIOMICS_PATH
+        super().__init__(path,"LUNG1-",keys=keys,padding=True,pad_size=MAX_DEPTH)
+
+class OMLungRadDataset(OMSegmentationDataset):
+    def __init__(self,keys=["GTV-1"]):
+        path=LUNG_RADIOMICS_PATH
+        super().__init__(path,"LUNG1-",keys=keys,padding=False,pad_size=MAX_DEPTH)
+
+class OMLungRadIntDatasetPad(OMSegmentationDataset):
+    def __init__(self,keys=["GTV-1vis-5"]):
+        path=LUNG_RADIOMICS_INTEROBS_PATH
+        super().__init__(path,"interobs",keys=keys,padding=True,pad_size=MAX_DEPTH)
+
+class OMLungRadIntDataset(OMSegmentationDataset):
+    def __init__(self,keys=["GTV-1vis-5"]):
+        path=LUNG_RADIOMICS_INTEROBS_PATH
+        super().__init__(path,"interobs",keys=keys,padding=False,pad_size=MAX_DEPTH)
+
 if __name__=="__main__":
     print("start")
-    dataset=LungRadiomicsDataset()
+    dataset=VolumeLungRadiomicsDataset()
     print(dataset[0])
 
     

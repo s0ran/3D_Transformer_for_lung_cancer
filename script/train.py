@@ -14,8 +14,8 @@ from memory_profiler import profile
 import gc
 
 from dataset import CONFIG_DATASET, LungRadiomicsInterobserverDataset,LungRadiomicsDataset
-from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryDSLManager,BCE_with_DiceLoss
-from metrics import DSC, DSCManager,BinaryDSC,BinaryDSCManager
+from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryweightDSLManager,BCE_with_DiceLoss,invDiceLoss,weightDiceLoss
+from metrics import DSC, DSCManager,BinaryDSC,BinaryweightDSCManager
 from utility import OutputLogger, measure_time
 from model import VolumeTransformer,ThreeDimensionalTransformer,ThreeDimensionalUNet,load_model,save_model
 from config import CONFIG
@@ -27,9 +27,9 @@ Datasets={
     0:"LungRadiomicsInterobserverDataset",
     1:"LungRadiomicsDataset",
 }
-Keyslist={
-    0:["GTV-1vis-5"],
-    1:["Lung-Left"],
+Keylist={
+    0:"GTV-1vis-5",
+    1:"GTV-1",
     }
 Models={
     0:"ThreeDimensionalTransformer",
@@ -38,7 +38,7 @@ Models={
 DATASET_ID=CONFIG_TRAIN.getint("DATASET_ID")
 DATASET=Datasets[DATASET_ID]
 MODEL_TYPE=Models[CONFIG_TRAIN.getint("MODEL_ID")]
-LABEL_KEYS=Keyslist[DATASET_ID]
+LABEL_KEY=Keylist[DATASET_ID]
 BATCH_SIZE=CONFIG_TRAIN.getint("BATCH_SIZE")
 DEVICE=torch.device(CONFIG_TRAIN.get("DEVICE")) if torch.cuda.is_available() else torch.device("cpu")
 DEBUG=False
@@ -64,35 +64,44 @@ DSC_on_training_Index=0
 #torch.backends.cudnn.benchmark = True
 #torch.backends.cudnn.enabled = False
 
+def information():
+    print(ID)
+    print(MODEL_TYPE)
+    print(DATASET)
+    print(DEVICE)
+    print(LABEL_KEY)
+
 
 @measure_time
 #@profile
 def train_one_loader(model,optimizer,loss_function,trainloader):
     global Loss_for_one_patch_Index
-    dscmanager=BinaryDSCManager(keys=LABEL_KEYS)
-    dslmanager=BinaryDSLManager(keys=LABEL_KEYS)
-    #dslmanager2=DSLManager(keys=LABEL_KEYS)
-    for data,labels in tqdm(trainloader,disable=not TQDM_ENABLED):
-        """if list(labels.values())[0][:,0].max()==0:
-            del data,labels
+    dscmanager=BinaryweightDSCManager()
+    dslmanager=BinaryweightDSLManager()
+    #dslmanager2=DSLManager()
+    for data,label in tqdm(trainloader,disable=not TQDM_ENABLED):
+        """if list(label.values())[0][:,0].max()==0:
+            del data,label
             torch.cuda.empty_cache()
             gc.collect()
             continue"""
-        labels={key:value.to(DEVICE) for key,value in labels.items()}
+        label=label.to(DEVICE)
         data=data.to(DEVICE)
         optimizer.zero_grad()
         pre=model(data)
-        dscmanager.register(pre,labels)
-        dslmanager.register(pre,labels)
-        #dslmanager2.register(pre,labels)
-        loss=loss_function(pre,labels,keys=LABEL_KEYS)
+        #print(data.min(),data.max(),pre.min(),pre.max())
+        #print(pre.size())
+        dscmanager.register(pre,label)
+        dslmanager.register(pre,label)
+        #dslmanager2.register(pre,label)
+        loss=loss_function(pre,label,)
         #print(f"loss:{loss}")
         loss.backward()
         optimizer.step()
         
         WRITER.add_scalar("process/loss_for_one_patch",loss,Loss_for_one_patch_Index)
         Loss_for_one_patch_Index+=1
-        del data,loss,pre,labels
+        del data,loss,pre,label
         torch.cuda.empty_cache()
         gc.collect()
         if DEBUG:
@@ -107,15 +116,15 @@ def train_one_loader(model,optimizer,loss_function,trainloader):
 @measure_time
 #@profile
 def validate_one_loader(model,valloader):
-    dsc_man=BinaryDSCManager(keys=LABEL_KEYS)
-    dsl_man=BinaryDSLManager(keys=LABEL_KEYS)
-    for data,labels in tqdm(valloader,disable=not TQDM_ENABLED):
+    dsc_man=BinaryweightDSCManager()
+    dsl_man=BinaryweightDSLManager()
+    for data,label in tqdm(valloader,disable=not TQDM_ENABLED):
         data=data.to(DEVICE)
-        labels={key:value.to(DEVICE) for key,value in labels.items()}
+        label=label.to(DEVICE)
         pre=model(data)
-        dsc_man.register(pre,labels)
-        dsl_man.register(pre,labels)
-        del data,labels,pre
+        dsc_man.register(pre,label)
+        dsl_man.register(pre,label)
+        del data,label,pre
         torch.cuda.empty_cache()
         gc.collect()
         if DEBUG:
@@ -130,7 +139,7 @@ def validate_one_loader(model,valloader):
 @measure_time
 def train(model,traindata,valdata):
     global DSC_on_evaluation_Index,DSC_Avg_for_one_epoch_Index,DSC_on_training_Index
-    loss_function=BCE_with_DiceLoss
+    loss_function=weightDiceLoss
     optimizer=Adam(model.parameters(),lr=LEARNINGLATE)
     for epoch in tqdm(range(1,EPOCH+1),disable=not TQDM_ENABLED):
         print(f"------------EPOCH {epoch}/{EPOCH}------------")
@@ -183,7 +192,7 @@ def train(model,traindata,valdata):
 @measure_time
 def make_data():
     #dataset=LungRadiomicsInterobserverDataset()
-    dataset=eval(f"{DATASET}()")
+    dataset=eval(f"{DATASET}(key=LABEL_KEY)")
     #dataset=LungRadiomicsDataset()
     #print(len(dataset))
     train_size=len(dataset)*4//5
@@ -199,6 +208,7 @@ def make_model():
     return model
 
 def main():
+    information()
     traindata,valdata=make_data()
     model=make_model()
     model=train(model,traindata,valdata)

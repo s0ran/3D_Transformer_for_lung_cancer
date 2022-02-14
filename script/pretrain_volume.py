@@ -14,15 +14,15 @@ from memory_profiler import profile
 import gc
 
 from dataset import CONFIG_DATASET,VolumeLungRadiomicsDataset,VolumeLungRadiomicsInterobserverDataset
-from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryDSLManager,BCE_with_DiceLoss,weightDiceLoss
+from loss_function import DiceLoss, DSLManager,BinaryDiceLoss,BinaryDSLManager,BCE_with_DiceLoss,weightDiceLoss,MSELoss
 from metrics import DSC, DSCManager,BinaryDSC,BinaryDSCManager,weightDSC,BinaryweightDSC
 from utility import OutputLogger, measure_time
-from model import VolumeTransformer,ThreeDimensionalUNet,load_model,save_model,MiniVolumeTransformer,VolumeTransformer2,VolumeTransformer3,VolumeTransformer4,VolumeTransformer5,VolumeTransformer6,MiniTransformer,VolumeTransformer7,MiniTransformer2,MiniTransformer3,MiniTransformer4,MiniTransformer5,MiniTransformer6,MiniTransformer7,MiniTransformer8,Transformer1,Transformer2,Transformer3,Transformer4
+from model import VolumeTransformer,ThreeDimensionalUNet,load_model,save_model,MiniVolumeTransformer,VolumeTransformer2,VolumeTransformer3,VolumeTransformer4,VolumeTransformer5,VolumeTransformer6,MiniTransformer,VolumeTransformer7,MiniTransformer2,MiniTransformer3,MiniTransformer4,MiniTransformer5,MiniTransformer8,Transformer2,Transformer3,Transformer4
 from config import CONFIG
 
 now=datetime.datetime.now()
 CONFIG_PATH=CONFIG["PATH"]
-CONFIG_TRAIN=CONFIG["Training"]
+CONFIG_PRETRAIN=CONFIG["Pretraining"]
 Datasets={
     0:"VolumeLungRadiomicsInterobserverDataset",
     1:"VolumeLungRadiomicsDataset",
@@ -47,42 +47,39 @@ Models={
     12:"MiniTransformer3",
     13:"MiniTransformer4",
     14:"MiniTransformer5",
-    15:"MiniTransformer6",
-    16:"MiniTransformer7",
     17:"MiniTransformer8",
-    18:"Transformer1",
-    19:"Transformer2",
-    20:"Transformer3",
-    21:"Transformer4",
+    18:"Transformer2",
+    19:"Transformer3",
+    20:"Transformer4",
 }
-DATASET_ID=CONFIG_TRAIN.getint("DATASET_ID")
+DATASET_ID=CONFIG_PRETRAIN.getint("DATASET_ID")
 DATASET=Datasets[DATASET_ID]
-MODEL_TYPE=Models[CONFIG_TRAIN.getint("MODEL_ID")]
+MODEL_TYPE=Models[CONFIG_PRETRAIN.getint("MODEL_ID")]
 LABEL_KEY=Keylist[DATASET_ID]
-BATCH_SIZE=CONFIG_TRAIN.getint("BATCH_SIZE")
-DEVICE=torch.device(CONFIG_TRAIN.get("DEVICE")) if torch.cuda.is_available() else torch.device("cpu")
+BATCH_SIZE=CONFIG_PRETRAIN.getint("BATCH_SIZE")
+DEVICE=torch.device(CONFIG_PRETRAIN.get("DEVICE")) if torch.cuda.is_available() else torch.device("cpu")
 DEBUG=False
 DEBUG2=False
-USE_PRETRAINMODEL=CONFIG_TRAIN.getboolean("USE_PRETRAINMODEL")
-PRETRAIN_MODEL_PATH=os.path.join(CONFIG_PATH["PRETRAIN_MODELPATH"],CONFIG_TRAIN["PRETRAIN_FILE_NAME"])
+#USE_PRETRAINMODEL=CONFIG_PRETRAIN.getboolean("USE_PRETRAINMODEL")
+#PREPRETRAIN_MODEL_PATH=os.path.join(CONFIG_PATH["PRETRAIN_MODELPATH"],CONFIG_PRETRAIN["PRETRAIN_FILE_NAME"])
 ID=f"{str(now.date())}-{now.hour}-{now.minute}"
-TRAIN_PATH_BASE=CONFIG_PATH["TRAIN_MODELPATH"]
-TRAIN_MODEL_PATH=os.path.join(CONFIG_PATH["TRAIN_MODELPATH"],f"{ID}.pt")
-OUTPUTLOG_PATH=os.path.join(CONFIG_PATH["TRAIN_LOGPATH"],f"{ID}.txt")
-EPOCH=CONFIG_TRAIN.getint("EPOCH")
-LEARNINGLATE=CONFIG_TRAIN.getfloat("LEARNINGLATE")
+PRETRAIN_PATH_BASE=CONFIG_PATH["PRETRAIN_MODELPATH"]
+PRETRAIN_MODEL_PATH=os.path.join(CONFIG_PATH["PRETRAIN_MODELPATH"],f"{ID}.pt")
+#OUTPUTLOG_PATH=os.path.join(CONFIG_PATH["PRETRAIN_LOGPATH"],f"{ID}.txt")
+EPOCH=CONFIG_PRETRAIN.getint("EPOCH")
+LEARNINGLATE=CONFIG_PRETRAIN.getfloat("LEARNINGLATE")
 WRITER=SummaryWriter()
-LOGGER=OutputLogger(OUTPUTLOG_PATH) if CONFIG_TRAIN.getboolean("OUTPUT_LOG") else None
-TQDM_ENABLED=CONFIG_TRAIN.getboolean("TQDM_ENABLED")
-NUM_WORKERS=CONFIG_TRAIN.getint("NUM_WORKERS")
+#OGGER=OutputLogger(OUTPUTLOG_PATH) if CONFIG_PRETRAIN.getboolean("OUTPUT_LOG") else None
+TQDM_ENABLED=CONFIG_PRETRAIN.getboolean("TQDM_ENABLED")
+NUM_WORKERS=CONFIG_PRETRAIN.getint("NUM_WORKERS")
 
 Loss_for_one_patch_Index=0
 DSC_on_evaluation_Index=0
 DSC_Avg_for_one_epoch_Index=0
 DSC_on_training_Index=0
 
-#torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.enabled = False
+torch.backends.cudnn.benchmark = True
+#torch.backends.cudnn.enabled = False
 
 def information():
     print(ID)
@@ -94,19 +91,18 @@ def information():
 @measure_time
 def train(model,traindata,valdata):
     global WRITER,DSC_on_evaluation_Index,DSC_Avg_for_one_epoch_Index,DSC_on_training_Index,Loss_for_one_patch_Index
-    loss_function=BCE_with_DiceLoss
-    metric=BinaryweightDSC
+    loss_function=DiceLoss
+    metric=DSC
     optimizer=Adam(model.parameters(),lr=LEARNINGLATE)
     for epoch in tqdm(range(1,EPOCH+1),disable=not TQDM_ENABLED):
         print(f"------------EPOCH {epoch}/{EPOCH}------------")
-        model.train()
+        model.pre_train()
         trainloader=DataLoader(traindata,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
         for data,label in tqdm(trainloader,disable=not TQDM_ENABLED):
             #print(data.size())
             data=data.to(DEVICE)
-            label=label.to(DEVICE)
+            label=data.to(DEVICE)
             optimizer.zero_grad()
-            torch.cuda.empty_cache()
             pre=model(data)
             loss=loss_function(pre,label)
             WRITER.add_scalar("process/loss_for_one_patch",loss,Loss_for_one_patch_Index)
@@ -121,8 +117,7 @@ def train(model,traindata,valdata):
                 print("Image Dice Similarity Coefficient",dsc)
                 print("finish training")
                 print(f"whole loss {loss}")
-                del dsc
-            """pre=model(torch.flip(data,[2]))
+            pre=model(torch.flip(data,[2]))
             loss=loss_function(pre,torch.flip(label,[2]))
             WRITER.add_scalar("process/loss_for_one_patch",loss,Loss_for_one_patch_Index)
             Loss_for_one_patch_Index+=1
@@ -163,9 +158,8 @@ def train(model,traindata,valdata):
             Loss_for_one_patch_Index+=1
             #print(loss)
             torch.cuda.empty_cache()
-            loss.backward()"""
+            loss.backward()
             optimizer.step()
-            #print(pre.size())
             #dsc=metric(pre,label,keys=LABEL_KEYS)
             
             del data,loss,pre,label
@@ -181,7 +175,7 @@ def train(model,traindata,valdata):
             valloader=DataLoader(valdata,batch_size=BATCH_SIZE,num_workers=NUM_WORKERS)
             for data,label in tqdm(valloader,disable=not TQDM_ENABLED):
                 data=data.to(DEVICE)
-                label=label.to(DEVICE)
+                label=data.to(DEVICE)
                 pre=model(data)
                 loss=loss_function(pre,label)
                 dsc=metric(pre,label)
@@ -207,9 +201,9 @@ def train(model,traindata,valdata):
             print("DSC standard deviation : ",dsc_std)  
         if DEBUG or DEBUG2:
             break
-        save_model(model,os.path.join(TRAIN_PATH_BASE,f"{ID}-{epoch}.pt"))
+        save_model(model,os.path.join(PRETRAIN_PATH_BASE,f"{ID}-{epoch}.pt"))
         if epoch>=2:
-            os.remove(os.path.join(TRAIN_PATH_BASE,f"{ID}-{epoch-1}.pt"))
+            os.remove(os.path.join(PRETRAIN_PATH_BASE,f"{ID}-{epoch-1}.pt"))
     return model
   
 @measure_time
@@ -221,10 +215,10 @@ def make_data():
     return traindata,valdata
 
 def make_model():
-    if USE_PRETRAINMODEL:
-        model=load_model(PRETRAIN_MODEL_PATH,DEVICE,MODEL_TYPE,pretrain=True)
-    else:
-        model=eval(f"{MODEL_TYPE}()").to(DEVICE)
+    #if USE_PRETRAINMODEL:
+    #    model=load_model(PREPRETRAIN_MODEL_PATH,DEVICE,MODEL_TYPE)
+    #else:
+    model=eval(f"{MODEL_TYPE}(pretrain=True)").to(DEVICE)
     return model
 
 def main():
@@ -232,7 +226,7 @@ def main():
     traindata,valdata=make_data()
     model=make_model()
     model=train(model,traindata,valdata)
-    save_model(model,TRAIN_MODEL_PATH)
+    save_model(model,PRETRAIN_MODEL_PATH)
 
 if __name__=="__main__":
     main()
